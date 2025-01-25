@@ -16,6 +16,8 @@ from signax.ema.ema_signatures import (
     ema_rolling_signature,
     _moving_window,
     ema_scaled_concat_right,
+    ema_rolling_signature_transform,
+    flatten_signature_stream,
 )
 
 rng = default_rng()
@@ -214,5 +216,33 @@ def test_inverse_rolling_signature():
     assert jnp.allclose(rolling_sig, rolling_sig_alt, atol=1e-4)
 
 
+def test_flatten_signature_stream():
+    n_paths = 2
+    path_len = 20
+    channels = 4
+    depth = 3
+
+    sig_stream = [
+        jnp.ones((n_paths, path_len, channels**i)) for i in range(1, depth + 1)
+    ]
+    flat_sig = flatten_signature_stream(sig_stream)
+    flat_sig_alt = jnp.ones(
+        (n_paths, path_len, sum([channels**i for i in range(1, depth + 1)]))
+    )
+    assert jnp.allclose(flat_sig, flat_sig_alt, atol=1e-4)
+
+
+def test_ema_sig_transform():
+    depth = 3
+    factor = 0.9
+
+    path = dummy.copy()
+    sig = ema_rolling_signature_transform(path, depth, factor)
+    # sig_flat = flatten_signature_stream(sig)
+    assert True
+
+
 # test_ema_rolling_signature()
-test_inverse_rolling_signature()
+# test_inverse_rolling_signature()
+# test_ema_sig_transform()
+# test_flatten_signature_stream()

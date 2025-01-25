@@ -152,6 +152,14 @@ def ema_rolling_signature(
     return rolling_sig
 
 
+@jax.jit
+def flatten_signature_stream(signature_stream: jax.Array) -> jax.Array:
+    return jnp.concatenate(
+        [x.reshape(*x.shape[:2], -1) for x in signature_stream],
+        axis=-1,
+    )
+
+
 def ema_rolling_signature_transform(
     path: jax.Array, depth: int, factor: float
 ) -> jax.Array:
@@ -162,3 +170,8 @@ def ema_rolling_signature_transform(
        factor: float, the factor to use for the EMA transform.
     """
     forward_rolling_sigs = ema_rolling_signature(path, depth, factor)
+    # path_ = jnp.concatenate([path[:, 1:], path[:, -1:]], axis=1)
+    backward_rolling_sigs = ema_rolling_signature(path, depth, factor, True)
+    timewise_fn = jax.vmap(signature_combine)
+    transformed = jax.vmap(timewise_fn)(forward_rolling_sigs, backward_rolling_sigs)
+    return transformed
