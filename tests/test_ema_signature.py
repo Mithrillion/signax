@@ -15,6 +15,7 @@ from signax.ema.ema_signatures import (
     ema_scaled_concat,
     ema_rolling_signature,
     _moving_window,
+    ema_scaled_concat_right,
 )
 
 rng = default_rng()
@@ -142,7 +143,7 @@ def test_ema_rolling_signature():
 
     # path = dummy.copy()
 
-    rolling_sig = ema_rolling_signature(path, depth, factor, scan=True)
+    rolling_sig = ema_rolling_signature(path, depth, factor)
 
     rolling_sig = jnp.concatenate(
         [x.reshape(*x.shape[:2], -1) for x in rolling_sig],
@@ -173,3 +174,45 @@ def test_sliding_window():
     jax_mw = _moving_window(path_, 2, 1)
     np_mw = sliding_window_view(path_, 2, 1).transpose(0, 1, 3, 2)
     assert jnp.allclose(jax_mw, np_mw)
+
+
+def test_inverse_rolling_signature():
+    n_paths = 2
+    path_len = 20
+    channels = 4
+    depth = 3
+    factor = 0.9
+
+    # path = rng.standard_normal((n_paths, path_len, channels))
+
+    path = dummy.copy()
+
+    rolling_sig = ema_rolling_signature(path, depth, factor, inverse=True)
+
+    rolling_sig = jnp.concatenate(
+        [x.reshape(*x.shape[:2], -1) for x in rolling_sig],
+        axis=-1,
+    )
+
+    path_ = jnp.concatenate([path, path[:, -1:]], axis=1)
+    sig = signature(path_[:, -2:, :], depth, flatten=False)
+
+    trace = [sig]
+    for i in range(1, path_len):
+        # sig = scale_signature(sig, factor)
+        new_sig = signature(path_[:, -i - 2 : -i, :], depth, flatten=False)
+        # sig = jax.vmap(signature_combine)(sig, new_sig)
+        sig = ema_scaled_concat_right(new_sig, sig, 1, factor)
+        trace += [sig]
+
+    trace = trace[::-1]
+
+    rolling_sig_alt = jnp.stack(
+        [jnp.concatenate([x.reshape((n_paths, -1)) for x in t], axis=-1) for t in trace]
+    ).transpose(1, 0, 2)
+
+    assert jnp.allclose(rolling_sig, rolling_sig_alt, atol=1e-4)
+
+
+# test_ema_rolling_signature()
+test_inverse_rolling_signature()
