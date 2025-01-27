@@ -4,6 +4,7 @@ import logging
 from functools import partial
 from typing import Callable
 
+from einops import rearrange
 import jax
 import jax.numpy as jnp
 from jax import flatten_util
@@ -118,7 +119,11 @@ def _moving_window(a: jax.Array, size: int, axis: int):
 
 
 def ema_rolling_signature(
-    path: jax.Array, depth: int, factor: float, inverse: bool = False
+    path: jax.Array,
+    depth: int,
+    factor: float,
+    inverse: bool = False,
+    padding: bool = True,
 ) -> list[jax.Array]:
     """
     Compute rolling decaying weight signature of a path.
@@ -127,14 +132,17 @@ def ema_rolling_signature(
      path: array of shape (batch, length, channel), the path to compute the signature of
      depth: int, the depth of the signature
      factor: float, the weight decay factor per time step
-     inverse: bool, whether to compute the inversely signature or not
+     inverse: bool, whether to compute the inversely weighted signature or not
+     padding: bool, whether to pad the signature with edge values or not
     """
     # duplicate first element along length dimension to the left
     if inverse:
-        path = jnp.concatenate([path, path[:, -1:]], axis=1)
+        if padding:
+            path = jnp.concatenate([path, path[:, -1:]], axis=1)
         scan_concat_op_fn = _scale_concat_op_right
     else:
-        path = jnp.concatenate([path[:, :1], path], axis=1)
+        if padding:
+            path = jnp.concatenate([path[:, :1], path], axis=1)
         scan_concat_op_fn = _scale_concat_op
     # unfold path to sliding window of size 2 along t dimension
     path_elem = _moving_window(path, 2, 1)
@@ -161,17 +169,104 @@ def flatten_signature_stream(signature_stream: jax.Array) -> jax.Array:
 
 
 def ema_rolling_signature_transform(
-    path: jax.Array, depth: int, factor: float
+    path: jax.Array, depth: int, factor: float, stride: int = 1
 ) -> jax.Array:
     """Compute the rolling signature of a path using the EMA transform.
     Args:
        path: jax.Array, the path to compute the rolling signature of.
        depth: int, the depth of the signature.
        factor: float, the factor to use for the EMA transform.
+       stride: int, the stride to use for the rolling signature.
     """
-    forward_rolling_sigs = ema_rolling_signature(path, depth, factor)
-    # path_ = jnp.concatenate([path[:, 1:], path[:, -1:]], axis=1)
-    backward_rolling_sigs = ema_rolling_signature(path, depth, factor, True)
+    if stride == 1:
+        forward_rolling_sigs = ema_rolling_signature(path, depth, factor)
+        # path_ = jnp.concatenate([path[:, 1:], path[:, -1:]], axis=1)
+        backward_rolling_sigs = ema_rolling_signature(path, depth, factor, True)
+    else:
+        forward_rolling_sigs = ema_rolling_signature_strided(
+            path, depth, factor, stride
+        )
+        backward_rolling_sigs = ema_rolling_signature_strided(
+            path, depth, factor, stride, True
+        )
     timewise_fn = jax.vmap(signature_combine)
     transformed = jax.vmap(timewise_fn)(forward_rolling_sigs, backward_rolling_sigs)
     return transformed
+
+
+def ema_rolling_signature_strided(
+    path: jax.Array, depth: int, factor: float, stride: int, inverse: bool = False
+) -> jax.Array:
+    """
+    Compute rolling decaying weight signature of a path, evaluated at strided points.
+
+    Args:
+       path: jax.Array, the path to compute the rolling signature of.
+       depth: int, the depth of the signature.
+       factor: float, the factor to use for the EMA transform.
+       stride: int, the stride to use for the rolling signature.
+       reverse: bool, whether to compute the inversely weighted signature or not
+    """
+    path_len = path.shape[1]
+    # find the smallest multiple of stride that is greater than or equal to path_len
+    padded_len = ((path_len + stride - 1) // stride) * stride
+    # pad left with first value and right with last value
+    pad_left = (padded_len - path_len) // 2
+    pad_right = padded_len - path_len - pad_left
+    # configure the scan function
+    if inverse:
+        path = jnp.pad(
+            path, ((0, 0), (pad_left, pad_right + stride), (0, 0)), mode="edge"
+        )
+        scan_concat_op_fn = _scale_concat_op_right
+        select_idx = 0
+        # break into non-overlapping windows
+        path_elem = rearrange(path, "b (w t) c -> b w t c", t=stride)
+        # append the last entry of the previous window to each current window
+        # pad the first window with the first entry of the first window
+        prev_path_tail = jnp.concatenate(
+            [path_elem[:, :1, :1, :], path_elem[:, :-1, -1:, :]], axis=1
+        )
+        path_elem = jnp.concatenate(
+            [
+                prev_path_tail,
+                path_elem,
+            ],
+            axis=2,
+        )
+    else:
+        path = jnp.pad(
+            path, ((0, 0), (pad_left + stride, pad_right), (0, 0)), mode="edge"
+        )
+        scan_concat_op_fn = _scale_concat_op
+        select_idx = -1
+        # break into non-overlapping windows
+        path_elem = rearrange(path, "b (w t) c -> b w t c", t=stride)
+        # append the first entry of the next window to each current window
+        # pad the last window with the last entry of the last window
+        next_path_head = jnp.concatenate(
+            [path_elem[:, 1:, :1, :], path_elem[:, -1:, -1:, :]], axis=1
+        )
+        path_elem = jnp.concatenate(
+            [
+                path_elem,
+                next_path_head,
+            ],
+            axis=2,
+        )
+
+    # compute ema signatures per path segment
+    batch_ema_sig_fn = lambda x: [
+        x[:, select_idx, ...]
+        for x in ema_rolling_signature(x, depth, factor, inverse, padding=False)
+    ]
+    sig_elem = jax.vmap(batch_ema_sig_fn, 1, 1)(path_elem)
+    segment_len = path_elem.shape[2]
+    sig_d = jnp.ones(sig_elem[0].shape[:2]) * segment_len
+
+    batch_reduce_fn = lambda x, y: jax.lax.associative_scan(
+        lambda u, t: scan_concat_op_fn(u, t, factor), (x, y), reverse=inverse
+    )
+
+    rolling_sig, lengths = jax.vmap(batch_reduce_fn)(sig_elem, sig_d)
+    return rolling_sig
