@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 from jax import flatten_util
 from jaxtyping import Array, Float
+from scipy.signal.windows import tukey
 
 from signax import utils
 from signax.tensor_ops import log, mult, mult_fused_restricted_exp, restricted_exp
@@ -315,3 +316,51 @@ def ema_rolling_signature_strided(
 
     rolling_sig, lengths = jax.vmap(batch_reduce_fn)(sig_elem, sig_d)
     return rolling_sig
+
+
+def windowed_sliding_signature(
+    path: jnp.ndarray,
+    depth: int,
+    window_len: int,
+    alpha: float = 0.5,
+    batch_size: int = None,
+) -> jnp.ndarray:
+    """
+    Sliding window signature with a window function.
+
+    Args:
+       path: jax.Array, the path to compute the rolling signature of.
+       depth: int, the depth of the signature.
+       window_len: lenth of the window. The window function is a Tukey window.
+       alpha: float, the alpha parameter of the Tukey window. Default is 0.5.
+       batch_size: int, the batch size to use for the computation.
+    """
+    # Ensure the window length is odd
+    window_len = window_len + 1 if window_len % 2 == 0 else window_len
+    window = jnp.array(tukey(window_len, alpha=alpha))
+    # Pad the path with the window length
+    padding_len = window_len // 2
+    padded_path = jnp.pad(
+        path, ((0, 0), (padding_len, padding_len), (0, 0)), mode="edge"
+    )
+    # unfold path to sliding window of size window_len along t dimension
+    path_elem = _moving_window(padded_path, window_len, 1)
+    # apply window function
+    path_elem = path_elem * window[None, :, None]
+    # compute the signature
+    batch_sig_fn = jax.vmap(lambda x: signature(x, depth, flatten=False))
+    if batch_size is None:
+        sigs = jax.vmap(batch_sig_fn)(path_elem)
+    else:
+        path_batches = [
+            path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
+            for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
+        ]
+        sig_list = []
+        for path_batch in path_batches:
+            sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
+            sig_list.append(sig_elem_batch)
+        sigs = [
+            jnp.concatenate(terms, axis=0) for terms in zip(*sig_list)
+        ]  # concatenate batches
+    return sigs

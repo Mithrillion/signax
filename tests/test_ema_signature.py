@@ -19,6 +19,7 @@ from signax.ema.ema_signatures import (
     ema_rolling_signature_transform,
     flatten_signature_stream,
     ema_rolling_signature_strided,
+    windowed_sliding_signature,
 )
 
 rng = default_rng()
@@ -320,6 +321,20 @@ def test_test_ema_rolling_signature_batched():
     assert np.allclose(rolling_sig, rolling_sig_batched)
 
 
+def test_windowed_sliding_signature():
+    n_paths = 10
+    path_len = 30
+    channels = 4
+    depth = 3
+    window_len = 5
+    alpha = 0.5
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    path = dummy.copy()
+    sig = windowed_sliding_signature(path, depth, window_len, alpha)
+    assert True
+
+
 # test_ema_rolling_signature()
 # test_inverse_rolling_signature()
 # test_ema_sig_transform()
@@ -327,3 +342,4 @@ def test_test_ema_rolling_signature_batched():
 # test_ema_rolling_signature_strided_simple()
 # test_ema_rolling_signature_strided_scaled()
 # test_test_ema_rolling_signature_batched()
+test_windowed_sliding_signature()
