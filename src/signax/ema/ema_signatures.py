@@ -124,6 +124,7 @@ def ema_rolling_signature(
     factor: float,
     inverse: bool = False,
     padding: bool = True,
+    batch_size: int = None,
 ) -> list[jax.Array]:
     """
     Compute rolling decaying weight signature of a path.
@@ -134,29 +135,67 @@ def ema_rolling_signature(
      factor: float, the weight decay factor per time step
      inverse: bool, whether to compute the inversely weighted signature or not
      padding: bool, whether to pad the signature with edge values or not
+     batch_size: int, the processing size to break path instance dimension into
     """
     # duplicate first element along length dimension to the left
     if inverse:
         if padding:
-            path = jnp.concatenate([path, path[:, -1:]], axis=1)
+            path = jnp.concatenate([path, path[:, -1:]], axis=1, dtype=path.dtype)
         scan_concat_op_fn = _scale_concat_op_right
     else:
         if padding:
-            path = jnp.concatenate([path[:, :1], path], axis=1)
+            path = jnp.concatenate([path[:, :1], path], axis=1, dtype=path.dtype)
         scan_concat_op_fn = _scale_concat_op
     # unfold path to sliding window of size 2 along t dimension
     path_elem = _moving_window(path, 2, 1)
     # compute the signature
     batch_sig_fn = jax.vmap(lambda x: signature(x, depth, flatten=False))
-    sig_elem = jax.vmap(batch_sig_fn)(path_elem)
+    if batch_size is None:
+        sig_elem = jax.vmap(batch_sig_fn)(path_elem)
+        sig_d = jnp.ones(sig_elem[0].shape[:2], dtype=jnp.int32)
+    else:
+        path_batches = [
+            path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
+            for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
+        ]
+        sig_list = []
+        for path_batch in path_batches:
+            sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
+            sig_list.append(sig_elem_batch)
+        sig_d = jnp.ones((path_elem.shape[0], sig_list[0][0].shape[1]), dtype=jnp.int32)
 
-    sig_d = jnp.ones(sig_elem[0].shape[:2])
-
+    # shared associative scan (reducion) step
     batch_reduce_fn = lambda x, y: jax.lax.associative_scan(
         lambda u, t: scan_concat_op_fn(u, t, factor), (x, y), reverse=inverse
     )
 
-    rolling_sig, lengths = jax.vmap(batch_reduce_fn)(sig_elem, sig_d)
+    if batch_size is None:
+        rolling_sig, lengths = jax.vmap(batch_reduce_fn)(sig_elem, sig_d)
+    else:
+        # break (sig_elem, sig_d) into list of batches [(sig_elem_batch, sig_d_batch) ...]
+        sig_batches = [
+            (
+                path_batch,
+                sig_d[sig_elem_batch_idx : sig_elem_batch_idx + batch_size],
+            )
+            for path_batch, sig_elem_batch_idx in zip(
+                sig_list,
+                range(
+                    0,
+                    path_elem.shape[0],
+                    batch_size,
+                ),
+            )
+        ]  # depends on JAX out of bound index behaviour
+        rolling_sig_list = []
+        for sig_elem_batch, sig_d_batch in sig_batches:
+            rolling_sig_batch, lengths_batch = jax.vmap(batch_reduce_fn)(
+                sig_elem_batch, sig_d_batch
+            )
+            rolling_sig_list.append(rolling_sig_batch)
+        rolling_sig = [
+            jnp.concatenate(terms, axis=0) for terms in zip(*rolling_sig_list)
+        ]  # concatenate batches
     return rolling_sig
 
 
@@ -180,7 +219,7 @@ def ema_rolling_signature_transform(
     """
     if stride == 1:
         forward_rolling_sigs = ema_rolling_signature(path, depth, factor)
-        # path_ = jnp.concatenate([path[:, 1:], path[:, -1:]], axis=1)
+        # path_ = jnp.concatenate([path[:, 1:], path[:, -1:]], axis=1, dtype=path.dtype)
         backward_rolling_sigs = ema_rolling_signature(path, depth, factor, True)
     else:
         forward_rolling_sigs = ema_rolling_signature_strided(
@@ -225,7 +264,9 @@ def ema_rolling_signature_strided(
         # append the last entry of the previous window to each current window
         # pad the first window with the first entry of the first window
         prev_path_tail = jnp.concatenate(
-            [path_elem[:, :1, :1, :], path_elem[:, :-1, -1:, :]], axis=1
+            [path_elem[:, :1, :1, :], path_elem[:, :-1, -1:, :]],
+            axis=1,
+            dtype=path.dtype,
         )
         path_elem = jnp.concatenate(
             [
@@ -233,6 +274,7 @@ def ema_rolling_signature_strided(
                 path_elem,
             ],
             axis=2,
+            dtype=path.dtype,
         )
     else:
         path = jnp.pad(
@@ -245,7 +287,9 @@ def ema_rolling_signature_strided(
         # append the first entry of the next window to each current window
         # pad the last window with the last entry of the last window
         next_path_head = jnp.concatenate(
-            [path_elem[:, 1:, :1, :], path_elem[:, -1:, -1:, :]], axis=1
+            [path_elem[:, 1:, :1, :], path_elem[:, -1:, -1:, :]],
+            axis=1,
+            dtype=path.dtype,
         )
         path_elem = jnp.concatenate(
             [
@@ -253,6 +297,7 @@ def ema_rolling_signature_strided(
                 next_path_head,
             ],
             axis=2,
+            dtype=path.dtype,
         )
 
     # compute ema signatures per path segment

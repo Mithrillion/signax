@@ -136,7 +136,7 @@ def test_ema_scaled_concat():
 
 
 def test_ema_rolling_signature():
-    n_paths = 2
+    n_paths = 10
     path_len = 20
     channels = 4
     depth = 3
@@ -303,9 +303,27 @@ def test_ema_sig_transform():
     assert True
 
 
+def test_test_ema_rolling_signature_batched():
+    n_paths = 10
+    path_len = 20
+    channels = 4
+    depth = 3
+    factor = 0.9
+    batch = 3
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    rolling_sig = ema_rolling_signature(path, depth, factor)
+    rolling_sig_batched = ema_rolling_signature(path, depth, factor, batch_size=batch)
+
+    rolling_sig = flatten_signature_stream(rolling_sig)
+    rolling_sig_batched = flatten_signature_stream(rolling_sig_batched)
+    assert np.allclose(rolling_sig, rolling_sig_batched)
+
+
 # test_ema_rolling_signature()
 # test_inverse_rolling_signature()
 # test_ema_sig_transform()
 # test_flatten_signature_stream()
 # test_ema_rolling_signature_strided_simple()
 # test_ema_rolling_signature_strided_scaled()
+# test_test_ema_rolling_signature_batched()
