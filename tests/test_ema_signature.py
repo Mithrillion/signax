@@ -323,7 +323,7 @@ def test_test_ema_rolling_signature_batched():
 
 def test_windowed_sliding_signature():
     n_paths = 10
-    path_len = 30
+    path_len = 37
     channels = 4
     depth = 3
     window_len = 5
@@ -342,4 +342,4 @@ def test_windowed_sliding_signature():
 # test_ema_rolling_signature_strided_simple()
 # test_ema_rolling_signature_strided_scaled()
 # test_test_ema_rolling_signature_batched()
-test_windowed_sliding_signature()
+# test_windowed_sliding_signature()

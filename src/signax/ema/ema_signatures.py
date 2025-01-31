@@ -209,7 +209,7 @@ def flatten_signature_stream(signature_stream: jax.Array) -> jax.Array:
 
 
 def ema_rolling_signature_transform(
-    path: jax.Array, depth: int, factor: float, stride: int = 1
+    path: jax.Array, depth: int, factor: float, stride: int = 1, batch_size: int = None
 ) -> jax.Array:
     """Compute the rolling signature of a path using the EMA transform.
     Args:
@@ -217,12 +217,22 @@ def ema_rolling_signature_transform(
        depth: int, the depth of the signature.
        factor: float, the factor to use for the EMA transform.
        stride: int, the stride to use for the rolling signature.
+       batch_size: int, the batch size to use for the rolling signature. If None, no batching is used.
     """
     if stride == 1:
-        forward_rolling_sigs = ema_rolling_signature(path, depth, factor)
+        forward_rolling_sigs = ema_rolling_signature(
+            path, depth, factor, batch_size=batch_size
+        )
         # path_ = jnp.concatenate([path[:, 1:], path[:, -1:]], axis=1, dtype=path.dtype)
-        backward_rolling_sigs = ema_rolling_signature(path, depth, factor, True)
+        backward_rolling_sigs = ema_rolling_signature(
+            path, depth, factor, True, batch_size=batch_size
+        )
     else:
+        if batch_size is not None:
+            raise NotImplementedError(
+                "Strided EMA rolling signatures are not implemented for batched paths."
+                "Please set batch_size=None."
+            )
         forward_rolling_sigs = ema_rolling_signature_strided(
             path, depth, factor, stride
         )
