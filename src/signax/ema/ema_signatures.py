@@ -228,16 +228,11 @@ def ema_rolling_signature_transform(
             path, depth, factor, True, batch_size=batch_size
         )
     else:
-        if batch_size is not None:
-            raise NotImplementedError(
-                "Strided EMA rolling signatures are not implemented for batched paths."
-                "Please set batch_size=None."
-            )
         forward_rolling_sigs = ema_rolling_signature_strided(
-            path, depth, factor, stride
+            path, depth, factor, stride, batch_size=batch_size
         )
         backward_rolling_sigs = ema_rolling_signature_strided(
-            path, depth, factor, stride, True
+            path, depth, factor, stride, True, batch_size=batch_size
         )
     timewise_fn = jax.vmap(signature_combine)
     transformed = jax.vmap(timewise_fn)(forward_rolling_sigs, backward_rolling_sigs)
@@ -245,7 +240,12 @@ def ema_rolling_signature_transform(
 
 
 def ema_rolling_signature_strided(
-    path: jax.Array, depth: int, factor: float, stride: int, inverse: bool = False
+    path: jax.Array,
+    depth: int,
+    factor: float,
+    stride: int,
+    inverse: bool = False,
+    batch_size: int = None,
 ) -> jax.Array:
     """
     Compute rolling decaying weight signature of a path, evaluated at strided points.
@@ -256,6 +256,7 @@ def ema_rolling_signature_strided(
        factor: float, the factor to use for the EMA transform.
        stride: int, the stride to use for the rolling signature.
        reverse: bool, whether to compute the inversely weighted signature or not
+       batch_size: int, the batch size to use for the computation.
     """
     path_len = path.shape[1]
     # find the smallest multiple of stride that is greater than or equal to path_len
@@ -312,19 +313,32 @@ def ema_rolling_signature_strided(
         )
 
     # compute ema signatures per path segment
-    batch_ema_sig_fn = lambda x: [
+    strided_ema_sig_fn = lambda x: [
         x[:, select_idx, ...]
         for x in ema_rolling_signature(x, depth, factor, inverse, padding=False)
     ]
-    sig_elem = jax.vmap(batch_ema_sig_fn, 1, 1)(path_elem)
-    segment_len = path_elem.shape[2]
-    sig_d = jnp.ones(sig_elem[0].shape[:2]) * segment_len
+    if batch_size is None:
+        sig_elem = jax.vmap(strided_ema_sig_fn, 1, 1)(path_elem)
+        segment_len = path_elem.shape[2]
+        sig_d = jnp.ones(sig_elem[0].shape[:2]) * segment_len
+    else:
+        path_batches = [
+            path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
+            for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
+        ]
+        sig_list = []
+        for path_batch in path_batches:
+            sig_elem_batch = jax.vmap(strided_ema_sig_fn, 1, 1)(path_batch)
+            sig_list.append(sig_elem_batch)
+        sig_elem = [jnp.concatenate(level, axis=0) for level in zip(*sig_list)]
+        segment_len = path_elem.shape[2]
+        sig_d = jnp.ones(sig_elem[0].shape[:2]) * segment_len
 
-    batch_reduce_fn = lambda x, y: jax.lax.associative_scan(
+    strided_reduce_fn = lambda x, y: jax.lax.associative_scan(
         lambda u, t: scan_concat_op_fn(u, t, factor), (x, y), reverse=inverse
     )
 
-    rolling_sig, lengths = jax.vmap(batch_reduce_fn)(sig_elem, sig_d)
+    rolling_sig, lengths = jax.vmap(strided_reduce_fn)(sig_elem, sig_d)
     return rolling_sig
 
 
@@ -334,6 +348,7 @@ def windowed_sliding_signature(
     window_len: int,
     alpha: float = 0.5,
     batch_size: int = None,
+    n_chunks: int = 1,
 ) -> jnp.ndarray:
     """
     Sliding window signature with a window function.
@@ -344,6 +359,7 @@ def windowed_sliding_signature(
        window_len: lenth of the window. The window function is a Tukey window.
        alpha: float, the alpha parameter of the Tukey window. Default is 0.5.
        batch_size: int, the batch size to use for the computation.
+       n_chunks: int, the number of chunks to split the path into. Default is 1.
     """
     # Ensure the window length is odd
     window_len = window_len + 1 if window_len % 2 == 0 else window_len
@@ -358,7 +374,9 @@ def windowed_sliding_signature(
     # apply window function
     path_elem = path_elem * window[None, :, None]
     # compute the signature
-    batch_sig_fn = jax.vmap(lambda x: signature(x, depth, flatten=False))
+    batch_sig_fn = jax.vmap(
+        lambda x: signature(x, depth, flatten=False, n_chunks=n_chunks)
+    )
     if batch_size is None:
         sigs = jax.vmap(batch_sig_fn)(path_elem)
     else:
