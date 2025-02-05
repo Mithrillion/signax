@@ -119,6 +119,7 @@ def _moving_window(a: jax.Array, size: int, axis: int):
     )(starts)
 
 
+@partial(jax.jit, static_argnames=("depth", "inverse", "padding", "batch_size"))
 def ema_rolling_signature(
     path: jax.Array,
     depth: int,
@@ -208,8 +209,13 @@ def flatten_signature_stream(signature_stream: jax.Array) -> jax.Array:
     )
 
 
+@partial(jax.jit, static_argnames=("depth", "stride", "batch_size"))
 def ema_rolling_signature_transform(
-    path: jax.Array, depth: int, factor: float, stride: int = 1, batch_size: int = None
+    path: jax.Array,
+    depth: int,
+    factor: float,
+    stride: int = 1,
+    batch_size: int = None,
 ) -> jax.Array:
     """Compute the rolling signature of a path using the EMA transform.
     Args:
@@ -239,6 +245,7 @@ def ema_rolling_signature_transform(
     return transformed
 
 
+@partial(jax.jit, static_argnames=("depth", "stride", "inverse", "batch_size"))
 def ema_rolling_signature_strided(
     path: jax.Array,
     depth: int,
@@ -320,7 +327,7 @@ def ema_rolling_signature_strided(
     if batch_size is None:
         sig_elem = jax.vmap(strided_ema_sig_fn, 1, 1)(path_elem)
         segment_len = path_elem.shape[2]
-        sig_d = jnp.ones(sig_elem[0].shape[:2]) * segment_len
+        sig_d = jnp.ones(sig_elem[0].shape[:2], dtype=jnp.int32) * segment_len
     else:
         path_batches = [
             path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
@@ -332,7 +339,7 @@ def ema_rolling_signature_strided(
             sig_list.append(sig_elem_batch)
         sig_elem = [jnp.concatenate(level, axis=0) for level in zip(*sig_list)]
         segment_len = path_elem.shape[2]
-        sig_d = jnp.ones(sig_elem[0].shape[:2]) * segment_len
+        sig_d = jnp.ones(sig_elem[0].shape[:2], dtype=jnp.int32) * segment_len
 
     strided_reduce_fn = lambda x, y: jax.lax.associative_scan(
         lambda u, t: scan_concat_op_fn(u, t, factor), (x, y), reverse=inverse
@@ -342,13 +349,14 @@ def ema_rolling_signature_strided(
     return rolling_sig
 
 
+@partial(jax.jit, static_argnames=("depth", "window_len", "alpha", "batch_size", "num_chunks"))
 def windowed_sliding_signature(
     path: jnp.ndarray,
     depth: int,
     window_len: int,
     alpha: float = 0.5,
     batch_size: int = None,
-    n_chunks: int = 1,
+    num_chunks: int = 1,
 ) -> jnp.ndarray:
     """
     Sliding window signature with a window function.
@@ -359,7 +367,7 @@ def windowed_sliding_signature(
        window_len: lenth of the window. The window function is a Tukey window.
        alpha: float, the alpha parameter of the Tukey window. Default is 0.5.
        batch_size: int, the batch size to use for the computation.
-       n_chunks: int, the number of chunks to split the path into. Default is 1.
+       num_chunks: int, the number of chunks to split the path into. Default is 1.
     """
     # Ensure the window length is odd
     window_len = window_len + 1 if window_len % 2 == 0 else window_len
@@ -375,7 +383,7 @@ def windowed_sliding_signature(
     path_elem = path_elem * window[None, :, None]
     # compute the signature
     batch_sig_fn = jax.vmap(
-        lambda x: signature(x, depth, flatten=False, n_chunks=n_chunks)
+        lambda x: signature(x, depth, flatten=False, num_chunks=num_chunks)
     )
     if batch_size is None:
         sigs = jax.vmap(batch_sig_fn)(path_elem)

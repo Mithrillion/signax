@@ -361,5 +361,5 @@ def test_ema_rolling_signature_strided_batched():
 # test_ema_rolling_signature_strided_simple()
 # test_ema_rolling_signature_strided_scaled()
 # test_test_ema_rolling_signature_batched()
-# test_windowed_sliding_signature()
-test_ema_rolling_signature_strided_batched()
+test_windowed_sliding_signature()
+# test_ema_rolling_signature_strided_batched()
