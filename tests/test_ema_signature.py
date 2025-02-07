@@ -20,6 +20,8 @@ from signax.ema.ema_signatures import (
     flatten_signature_stream,
     ema_rolling_signature_strided,
     windowed_sliding_signature,
+    scale_path,
+    ema_signature,
 )
 
 rng = default_rng()
@@ -343,7 +345,7 @@ def test_ema_rolling_signature_strided_batched():
     factor = 0.9
     batch = 3
     stride = 7
-    
+
     path = rng.standard_normal((n_paths, path_len, channels))
     rolling_sig = ema_rolling_signature_strided(path, depth, factor, stride=stride)
     rolling_sig_batched = ema_rolling_signature_strided(
@@ -354,12 +356,48 @@ def test_ema_rolling_signature_strided_batched():
     assert np.allclose(rolling_sig, rolling_sig_batched)
 
 
+def test_scale_path():
+    n_paths = 3
+    path_len = 37
+    channels = 4
+    depth = 3
+    factor = 0.9
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    rolling_sig = ema_rolling_signature(path, depth, factor)
+    rolling_sig = flatten_signature_stream(rolling_sig)
+    scaled_sig_direct = signature(scale_path(path, factor), depth)
+
+    assert np.allclose(rolling_sig[:, -1, :], scaled_sig_direct)
+
+
+def test_ema_signature():
+    n_paths = 3
+    path_len = 133
+    channels = 4
+    depth = 3
+    factor = 0.9
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    rolling_sig = ema_rolling_signature(path, depth, factor)
+    rolling_sig = flatten_signature_stream(rolling_sig)
+    scaled_sig_direct = ema_signature(path, depth, factor)
+    assert np.allclose(rolling_sig[:, -1, :], scaled_sig_direct)
+
+    rolling_sig_inv = ema_rolling_signature(path, depth, factor, inverse=True)
+    rolling_sig_inv = flatten_signature_stream(rolling_sig_inv)
+    scaled_sig_direct_inv = ema_signature(path, depth, factor, inverse=True)
+    assert np.allclose(rolling_sig_inv[:, 0, :], scaled_sig_direct_inv, atol=1e-4)
+
+
 # test_ema_rolling_signature()
 # test_inverse_rolling_signature()
 # test_ema_sig_transform()
 # test_flatten_signature_stream()
 # test_ema_rolling_signature_strided_simple()
 # test_ema_rolling_signature_strided_scaled()
-# test_test_ema_rolling_signature_batched()
-test_windowed_sliding_signature()
+# test_ema_rolling_signature_batched()
+# test_windowed_sliding_signature()
 # test_ema_rolling_signature_strided_batched()
+# test_scale_path()
+test_ema_signature()

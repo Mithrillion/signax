@@ -18,6 +18,59 @@ from signax.signatures import signature_combine, multi_signature_combine, signat
 logger = logging.getLogger(__name__)
 
 
+def scale_path(path: jax.Array, factor: float, dim: int = -2) -> jax.Array:
+    """
+    Scale a path by a factor along a given dimension.
+    Args:
+        path: array of shape (..., T, D)
+        factor: float, the factor to scale the path by
+        dim: int, the dimension to scale along
+    Returns:
+        array of shape (..., T, D)
+    """
+    if dim != -2:
+        # swap dim and -2 axis
+        path = jnp.swapaxes(path, dim, -2)
+    # compute diff along time axis
+    time_diff = jnp.diff(path, 1, axis=-2, prepend=path[..., [0], :])
+    # scale the diff by [factor ** n, ..., factor ** 3, factor ** 2, factor ** 1, 1]
+    time_diff = (
+        time_diff * factor ** (jnp.arange(time_diff.shape[-2], 0, -1) - 1)[..., None]
+    )
+    # cumsum to get the scaled path
+    path = jnp.cumsum(time_diff, axis=-2)
+    # swap back if necessary
+    if dim != -2:
+        path = jnp.swapaxes(path, dim, -2)
+    return path
+
+
+def ema_signature(
+    path: jax.Array,
+    depth: int,
+    factor: float,
+    inverse: bool = False,
+    **kwargs,
+) -> jax.Array:
+    """
+    Compute the signature of a path scaled by a factor along a given dimension.
+    Args:
+        path: array of shape (..., T, D)
+        depth: int, the depth of the signature
+        factor: float, the factor to scale the path by
+        inverse: bool, if True, compute the inversely weighted signature
+        kwargs: additional arguments to pass to the signature function
+    Returns:
+        array of shape (..., C)
+    """
+    if inverse:
+        path = scale_path(path[..., ::-1, :], factor)[..., ::-1, :]
+        return signature(path, depth=depth, **kwargs)
+    else:
+        path = scale_path(path, factor)
+        return signature(path, depth=depth, **kwargs)
+
+
 @jax.jit
 def scale_signature(signature: list[jax.Array], factor: float) -> list[jax.Array]:
     """
@@ -349,7 +402,10 @@ def ema_rolling_signature_strided(
     return rolling_sig
 
 
-@partial(jax.jit, static_argnames=("depth", "window_len", "alpha", "batch_size", "num_chunks"))
+@partial(
+    jax.jit,
+    static_argnames=("depth", "window_len", "alpha", "batch_size", "num_chunks"),
+)
 def windowed_sliding_signature(
     path: jnp.ndarray,
     depth: int,
