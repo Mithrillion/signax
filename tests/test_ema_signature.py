@@ -296,6 +296,7 @@ def test_ema_rolling_signature_strided_scaled():
     sig_strided_flat = flatten_signature_stream(sig_strided)
     sig_regular_flat = flatten_signature_stream(sig_regular)
 
+    assert jnp.allclose(sig_strided_flat[:, 5], sig_regular_flat[:, 500], atol=1)
     assert jnp.allclose(sig_strided_flat[:, -1], sig_regular_flat[:, -1], atol=1e-1)
 
 
@@ -342,12 +343,12 @@ def test_windowed_sliding_signature():
 
 def test_ema_rolling_signature_strided_batched():
     n_paths = 10
-    path_len = 37
+    path_len = 435
     channels = 4
     depth = 3
     factor = 0.9
     batch = 3
-    stride = 7
+    stride = 13
 
     path = rng.standard_normal((n_paths, path_len, channels))
     rolling_sig = ema_rolling_signature_strided(path, depth, factor, stride=stride)
@@ -509,13 +510,12 @@ def test_indexed_ema_signature_manual():
     assert np.allclose(flatten_signature(ema_01234), ema_4a)
 
 
-
 # test_ema_rolling_signature()
 # test_inverse_rolling_signature()
 # test_ema_sig_transform()
 # test_flatten_signature_stream()
 # test_ema_rolling_signature_strided_simple()
-# test_ema_rolling_signature_strided_scaled()
+test_ema_rolling_signature_strided_scaled()
 # test_ema_rolling_signature_batched()
 # test_windowed_sliding_signature()
 # test_ema_rolling_signature_strided_batched()

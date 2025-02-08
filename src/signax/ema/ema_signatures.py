@@ -407,10 +407,13 @@ def ema_rolling_signature_strided(
         )
 
     # compute ema signatures per path segment
-    strided_ema_sig_fn = lambda x: [
-        x[:, select_idx, ...]
-        for x in ema_rolling_signature(x, depth, factor, inverse, padding=False)
-    ]
+    # strided_ema_sig_fn = lambda x: [
+    #     x[:, select_idx, ...]
+    #     for x in ema_rolling_signature(x, depth, factor, inverse, padding=False)
+    # ]
+    strided_ema_sig_fn = lambda x: ema_signature(
+        x, depth, factor, inverse, flatten=False
+    )
     if batch_size is None:
         sig_elem = jax.vmap(strided_ema_sig_fn, 1, 1)(path_elem)
         segment_len = path_elem.shape[2]
