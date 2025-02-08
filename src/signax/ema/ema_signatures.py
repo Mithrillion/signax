@@ -603,6 +603,7 @@ def indexed_ema_signature(
     return rolling_sig
 
 
+@jax.jit
 def unsqueeze_zero_dim(x: jax.Array):
     if jnp.ndim(x) == 0:
         return jnp.array([x])

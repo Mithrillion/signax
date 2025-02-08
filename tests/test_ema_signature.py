@@ -515,7 +515,7 @@ def test_indexed_ema_signature_manual():
 # test_ema_sig_transform()
 # test_flatten_signature_stream()
 # test_ema_rolling_signature_strided_simple()
-test_ema_rolling_signature_strided_scaled()
+# test_ema_rolling_signature_strided_scaled()
 # test_ema_rolling_signature_batched()
 # test_windowed_sliding_signature()
 # test_ema_rolling_signature_strided_batched()
