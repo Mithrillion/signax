@@ -18,10 +18,13 @@ from signax.ema.ema_signatures import (
     ema_scaled_concat_right,
     ema_rolling_signature_transform,
     flatten_signature_stream,
+    flatten_signature,
     ema_rolling_signature_strided,
     windowed_sliding_signature,
     scale_path,
     ema_signature,
+    indexed_ema_signature,
+    _indexed_ema_signature_debug,
 )
 
 rng = default_rng()
@@ -140,10 +143,10 @@ def test_ema_scaled_concat():
 
 def test_ema_rolling_signature():
     n_paths = 10
-    path_len = 20
+    path_len = 1000
     channels = 4
     depth = 3
-    factor = 0.9
+    factor = 0.95
 
     path = rng.standard_normal((n_paths, path_len, channels))
 
@@ -171,7 +174,7 @@ def test_ema_rolling_signature():
         [jnp.concatenate([x.reshape((n_paths, -1)) for x in t], axis=-1) for t in trace]
     ).transpose(1, 0, 2)
 
-    assert jnp.allclose(rolling_sig, rolling_sig_alt, atol=1e-4)
+    assert jnp.allclose(rolling_sig, rolling_sig_alt)
 
 
 def test_sliding_window():
@@ -373,10 +376,10 @@ def test_scale_path():
 
 def test_ema_signature():
     n_paths = 3
-    path_len = 133
+    path_len = 315
     channels = 4
     depth = 3
-    factor = 0.9
+    factor = 0.95
 
     path = rng.standard_normal((n_paths, path_len, channels))
     rolling_sig = ema_rolling_signature(path, depth, factor)
@@ -384,10 +387,127 @@ def test_ema_signature():
     scaled_sig_direct = ema_signature(path, depth, factor)
     assert np.allclose(rolling_sig[:, -1, :], scaled_sig_direct)
 
+    scaled_sig_direct = ema_signature(path[:, :110, :], depth, factor)
+    assert np.allclose(rolling_sig[:, 109, :], scaled_sig_direct)
+    # TODO: why rolling sig pos 109 = ema_sig pos 110?
+
     rolling_sig_inv = ema_rolling_signature(path, depth, factor, inverse=True)
     rolling_sig_inv = flatten_signature_stream(rolling_sig_inv)
     scaled_sig_direct_inv = ema_signature(path, depth, factor, inverse=True)
     assert np.allclose(rolling_sig_inv[:, 0, :], scaled_sig_direct_inv, atol=1e-4)
+
+
+def test_ema_signature_2():
+    n_paths = 3
+    path_len = 245
+    channels = 4
+    depth = 3
+    factor = 0.95
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    ema_0 = ema_signature(path[:, :23, :], depth, factor, flatten=False)
+    ema_1 = ema_signature(path[:, 23 - 1 : 57, :], depth, factor, flatten=False)
+    ema_2 = ema_signature(path[:, 57 - 1 : 111, :], depth, factor, flatten=False)
+    ema_3 = ema_signature(path[:, 111 - 1 : 171, :], depth, factor, flatten=False)
+    ema_4 = ema_signature(path[:, 171 - 1 :, :], depth, factor, flatten=False)
+    joint_1 = ema_scaled_concat(ema_0, ema_1, 57 - 23, factor)
+    joint_2 = ema_scaled_concat(joint_1, ema_2, 111 - 57, factor)
+    joint_3 = ema_scaled_concat(joint_2, ema_3, 171 - 111, factor)
+    joint_4 = ema_scaled_concat(joint_3, ema_4, 245 - 171, factor)
+    joint_alt_1 = ema_signature(path[:, :57], depth, factor)
+    joint_alt_2 = ema_signature(path[:, :111], depth, factor)
+    joint_alt_3 = ema_signature(path[:, :171], depth, factor)
+    joint_alt_4 = ema_signature(path, depth, factor)
+    joint_1 = flatten_signature(joint_1)
+    joint_2 = flatten_signature(joint_2)
+    joint_3 = flatten_signature(joint_3)
+    joint_4 = flatten_signature(joint_4)
+    assert np.allclose(joint_1, joint_alt_1)
+    assert np.allclose(joint_2, joint_alt_2)
+    assert np.allclose(joint_3, joint_alt_3)
+    assert np.allclose(joint_4, joint_alt_4)
+
+
+def test_indexed_ema_signature():
+    n_paths = 2
+    path_len = 156
+    channels = 4
+    depth = 3
+    factor = 0.95
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    ind_sig = flatten_signature_stream(
+        indexed_ema_signature(
+            path, depth, factor, np.array([36, 77, 89, 126]), padding=False
+        )
+    )
+    ema_0 = ema_signature(path[:, :36, :], depth, factor)
+    ema_1 = ema_signature(path[:, :77, :], depth, factor)
+    ema_2 = ema_signature(path[:, :89, :], depth, factor)
+    ema_3 = ema_signature(path[:, :126, :], depth, factor)
+    ema_4 = ema_signature(path, depth, factor)
+    roll_ema = ema_rolling_signature(path, depth, factor)
+    roll_ema = flatten_signature_stream(roll_ema)
+    assert np.allclose(ind_sig[:, 0], ema_0)
+    assert np.allclose(ind_sig[:, 1], ema_1)
+    assert np.allclose(ind_sig[:, 2], ema_2)
+    assert np.allclose(ind_sig[:, 3], ema_3)
+    assert np.allclose(ind_sig[:, 4], ema_4)
+
+
+def test_indexed_ema_signature_debug():
+    n_paths = 2
+    path_len = 1235
+    channels = 4
+    depth = 3
+    factor = 0.9
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    sig = _indexed_ema_signature_debug(
+        path, depth, factor, np.array([36, 124, 454, 845]), padding=False
+    )
+    manual_splits = [
+        path[:, :36, :],
+        path[:, 36 - 1 : 124, :],
+        path[:, 124 - 1 : 454, :],
+        path[:, 454 - 1 : 845, :],
+        path[:, 845 - 1 :, :],
+    ]
+    manual_sig = [ema_signature(p, depth, factor) for p in manual_splits]
+    manual_sig = jnp.stack(manual_sig, axis=1)
+    flat_sig = flatten_signature_stream(sig)
+    assert jnp.allclose(flat_sig, manual_sig)
+
+
+def test_indexed_ema_signature_manual():
+    n_paths = 2
+    path_len = 156
+    channels = 4
+    depth = 3
+    factor = 0.95
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    ema_0 = ema_signature(path[:, :36, :], depth, factor, flatten=False)
+    ema_1 = ema_signature(path[:, 36 - 1 : 77, :], depth, factor, flatten=False)
+    ema_2 = ema_signature(path[:, 77 - 1 : 89, :], depth, factor, flatten=False)
+    ema_3 = ema_signature(path[:, 89 - 1 : 126, :], depth, factor, flatten=False)
+    ema_4 = ema_signature(path[:, 126 - 1 :, :], depth, factor, flatten=False)
+    ema_01 = ema_scaled_concat(ema_0, ema_1, 41, factor)
+    ema_012 = ema_scaled_concat(ema_01, ema_2, 12, factor)
+    ema_23 = ema_scaled_concat(ema_2, ema_3, 37, factor)
+    ema_0123 = ema_scaled_concat(ema_01, ema_23, 49, factor)
+    ema_01234 = ema_scaled_concat(ema_0123, ema_4, 30, factor)
+    ema_0a = ema_signature(path[:, :36, :], depth, factor)
+    ema_1a = ema_signature(path[:, :77, :], depth, factor)
+    ema_2a = ema_signature(path[:, :89, :], depth, factor)
+    ema_3a = ema_signature(path[:, :126, :], depth, factor)
+    ema_4a = ema_signature(path, depth, factor)
+    assert np.allclose(flatten_signature(ema_0), ema_0a)
+    assert np.allclose(flatten_signature(ema_01), ema_1a)
+    assert np.allclose(flatten_signature(ema_012), ema_2a)
+    assert np.allclose(flatten_signature(ema_0123), ema_3a)
+    assert np.allclose(flatten_signature(ema_01234), ema_4a)
+
 
 
 # test_ema_rolling_signature()
@@ -400,4 +520,8 @@ def test_ema_signature():
 # test_windowed_sliding_signature()
 # test_ema_rolling_signature_strided_batched()
 # test_scale_path()
-test_ema_signature()
+# test_ema_signature()
+# test_ema_signature_2()
+# test_indexed_ema_signature()
+# test_indexed_ema_signature_debug()
+# test_indexed_ema_signature_manual()

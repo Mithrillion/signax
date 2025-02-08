@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import Callable
+from typing import Callable, Union
 
-from einops import rearrange
+from einops import rearrange, repeat
 import jax
 import jax.numpy as jnp
 from jax import flatten_util
@@ -18,6 +18,7 @@ from signax.signatures import signature_combine, multi_signature_combine, signat
 logger = logging.getLogger(__name__)
 
 
+@partial(jax.jit, static_argnames=("dim",))
 def scale_path(path: jax.Array, factor: float, dim: int = -2) -> jax.Array:
     """
     Scale a path by a factor along a given dimension.
@@ -45,12 +46,17 @@ def scale_path(path: jax.Array, factor: float, dim: int = -2) -> jax.Array:
     return path
 
 
+@partial(
+    jax.jit, static_argnames=("depth", "inverse", "stream", "flatten", "num_chunks")
+)
 def ema_signature(
     path: jax.Array,
     depth: int,
     factor: float,
     inverse: bool = False,
-    **kwargs,
+    stream: bool = False,
+    flatten: bool = True,
+    num_chunks: int = 1,
 ) -> jax.Array:
     """
     Compute the signature of a path scaled by a factor along a given dimension.
@@ -65,10 +71,14 @@ def ema_signature(
     """
     if inverse:
         path = scale_path(path[..., ::-1, :], factor)[..., ::-1, :]
-        return signature(path, depth=depth, **kwargs)
+        return signature(
+            path, depth=depth, stream=stream, flatten=flatten, num_chunks=num_chunks
+        )
     else:
         path = scale_path(path, factor)
-        return signature(path, depth=depth, **kwargs)
+        return signature(
+            path, depth=depth, stream=stream, flatten=flatten, num_chunks=num_chunks
+        )
 
 
 @jax.jit
@@ -98,7 +108,10 @@ def ema_scaled_concat(
       factor: float, the factor to scale the first signature by
     """
     scaled_a = scale_signature(sig_a, factor**len_b)
-    return jax.vmap(signature_combine)(scaled_a, sig_b)
+    if jnp.ndim(sig_a[0]) == 1:
+        return signature_combine(scaled_a, sig_b)
+    else:
+        return jax.vmap(signature_combine)(scaled_a, sig_b)
 
 
 @jax.jit
@@ -106,7 +119,10 @@ def ema_scaled_concat_right(
     sig_a: list[jax.Array], sig_b: list[jax.Array], len_a: int, factor: float
 ) -> list[jax.Array]:
     scaled_b = scale_signature(sig_b, factor**len_a)
-    return jax.vmap(signature_combine)(sig_a, scaled_b)
+    if jnp.ndim(sig_a[0]) == 1:
+        return signature_combine(sig_a, scaled_b)
+    else:
+        return jax.vmap(signature_combine)(sig_a, scaled_b)
 
 
 @jax.jit
@@ -121,7 +137,10 @@ def _ema_scaled_concat_list(
     sig_a: list[jax.Array], sig_b: list[jax.Array], len_b: list[int], factor: float
 ) -> list[jax.Array]:
     scaled_a = _scaled_signature_list(sig_a, factor**len_b)
-    return jax.vmap(signature_combine)(scaled_a, sig_b)
+    if jnp.ndim(sig_a[0]) == 1:
+        return signature_combine(scaled_a, sig_b)
+    else:
+        return jax.vmap(signature_combine)(scaled_a, sig_b)
 
 
 @jax.jit
@@ -129,7 +148,10 @@ def _ema_scaled_concat_right_list(
     sig_a: list[jax.Array], sig_b: list[jax.Array], len_a: list[int], factor: float
 ) -> list[jax.Array]:
     scaled_b = _scaled_signature_list(sig_b, factor**len_a)
-    return jax.vmap(signature_combine)(sig_a, scaled_b)
+    if jnp.ndim(sig_a[0]) == 1:
+        return signature_combine(sig_a, scaled_b)
+    else:
+        return jax.vmap(signature_combine)(sig_a, scaled_b)
 
 
 # TODO: confusion between batched signatures [(b, d), (b, d, d), ...]
@@ -144,9 +166,11 @@ def _scale_concat_op(
 ) -> tuple[list[jax.Array], int]:
     sig_a, len_a = sig_a_n_len
     sig_b, len_b = sig_b_n_len
-    if len(len_b) == 0:
+    if jnp.size(len_b) == 0:
         return sig_a, len_a + len_b
-    sig_concat = _ema_scaled_concat_list(sig_a, sig_b, len_b, factor)
+    sig_concat = _ema_scaled_concat_list(
+        sig_a, sig_b, unsqueeze_zero_dim(len_b), factor
+    )
     return sig_concat, len_a + len_b
 
 
@@ -158,9 +182,11 @@ def _scale_concat_op_right(
 ) -> tuple[list[jax.Array], int]:
     sig_a, len_a = sig_a_n_len
     sig_b, len_b = sig_b_n_len
-    if len(len_a) == 0:
+    if jnp.size(len_a) == 0:
         return sig_b, len_a + len_b
-    sig_concat = _ema_scaled_concat_right_list(sig_a, sig_b, len_a, factor)
+    sig_concat = _ema_scaled_concat_right_list(
+        sig_a, sig_b, unsqueeze_zero_dim(len_a), factor
+    )
     return sig_concat, len_a + len_b
 
 
@@ -255,7 +281,15 @@ def ema_rolling_signature(
 
 
 @jax.jit
-def flatten_signature_stream(signature_stream: jax.Array) -> jax.Array:
+def flatten_signature(signature: list[jax.Array]) -> jax.Array:
+    return jnp.concatenate(
+        [x.reshape(*x.shape[:1], -1) for x in signature],
+        axis=-1,
+    )
+
+
+@jax.jit
+def flatten_signature_stream(signature_stream: list[jax.Array]) -> jax.Array:
     return jnp.concatenate(
         [x.reshape(*x.shape[:2], -1) for x in signature_stream],
         axis=-1,
@@ -456,3 +490,178 @@ def windowed_sliding_signature(
             jnp.concatenate(terms, axis=0) for terms in zip(*sig_list)
         ]  # concatenate batches
     return sigs
+
+
+def tree_transpose(list_of_trees):
+    """
+    Converts a list of trees of identical structure into a single tree of lists.
+    """
+    return jax.tree.map(lambda *xs: list(xs), *list_of_trees)
+
+
+def _append_last_endpoint(carry, x):
+    return x[:, [-1], :], jnp.concatenate(carry, x, axis=-2)
+
+
+def indexed_ema_signature(
+    path: jax.Array,
+    depth: int,
+    factor: float,
+    indices: jax.Array,
+    inverse: bool = False,
+    padding: bool = True,
+    # batch_size: int = None,
+) -> jax.Array:
+    """
+    Compute the signature of a path scaled by a factor at specific indices along the time dimension.
+
+    Args:
+        path: The path to compute the signature of.
+        depth: The depth of the signature.
+        factor: The factor to scale the path by.
+        indices: The indices at which to scale the path.
+        inverse: Whether to compute the inverse signature.
+        padding: Whether to pad the path to the nearest power of 2.
+        # batch_size: The batch size to use for computing the signature.
+    """
+    if inverse:
+        if padding:
+            path = jnp.concatenate([path, path[:, -1:]], axis=1, dtype=path.dtype)
+        # scan_concat_op_fn = _scale_concat_op_right
+        scan_concat_op_fn = _debug_right_scan_fn
+    else:
+        if padding:
+            path = jnp.concatenate([path[:, :1], path], axis=1, dtype=path.dtype)
+        # scan_concat_op_fn = _scale_concat_op
+        scan_concat_op_fn = _debug_scan_fn
+    split_path = jnp.split(path, indices, axis=1)
+    split_lengths = jnp.array(
+        jax.tree_map(lambda x: x.shape[1], split_path), dtype=jnp.int32
+    )
+    split_path_ends = [x[..., [-1], :] for x in split_path[:-1]]
+    split_path = [split_path[0]] + [
+        jnp.concatenate([e, p], axis=1) for e, p in zip(split_path_ends, split_path[1:])
+    ]
+
+    split_ema_sigs = jax.tree_map(
+        lambda x: ema_signature(x, depth, factor, inverse=inverse, flatten=False),
+        split_path,
+    )
+    split_ema_sigs = tree_transpose(split_ema_sigs)
+    split_ema_sigs = [jnp.stack(x, 1) for x in split_ema_sigs]
+
+    # batch_reduce_fn = lambda x, y: jax.lax.associative_scan(
+    #     lambda u, t: scan_concat_op_fn(u, t, factor), (x, y), reverse=inverse
+    # )
+    # rolling_sig, lengths = jax.vmap(batch_reduce_fn)(
+    #     split_ema_sigs, repeat(split_lengths, "t -> b t", b=path.shape[0])
+    # )
+
+    # TODO: figure out why associative scan does not match the manual results
+
+    # DEBUG
+    # def batch_reduce_fn(sigs_lens):
+    #     sigs, b_lens = sigs_lens[:-1], sigs_lens[-1]
+    #     res = [s[[0], ...] for s in sigs]
+    #     out = [res]
+    #     for i, b_len in enumerate(b_lens[1:]):
+    #         res = ema_scaled_concat(res, [s[[i + 1], ...] for s in sigs], b_len, factor)
+    #         out.append(res)
+    #     out = tree_transpose(out)
+    #     out = [jnp.stack(x, 0) for x in out]
+    #     return out
+
+    # def batch_reduce_fn(sigs_lens):
+    #     out = jax.lax.associative_scan(
+    #         lambda u, t: scan_concat_op_fn((u[:-1], u[-1]), (t[:-1], t[-1]), factor),
+    #         sigs_lens,
+    #         reverse=inverse,
+    #     )
+    #     return out
+
+    def batch_reduce_fn(sigs_lens):
+        init = (
+            *(s[0, ...] * 0 for s in sigs_lens[:-1]),
+            jnp.array([], dtype=jnp.int32),
+        )
+        _, out = jax.lax.scan(
+            lambda u, t: scan_concat_op_fn((u[:-1], u[-1]), (t[:-1], t[-1]), factor),
+            init,
+            sigs_lens,
+            reverse=inverse,
+        )
+        return out
+
+    rolling_sig = jax.vmap(batch_reduce_fn, in_axes=0)(
+        (*split_ema_sigs, repeat(split_lengths, "t -> b t", b=path.shape[0]))
+    )
+    rolling_sig = rolling_sig[:-1]
+
+    return rolling_sig
+
+
+def unsqueeze_zero_dim(x: jax.Array):
+    if jnp.ndim(x) == 0:
+        return jnp.array([x])
+    return x
+
+
+@jax.jit
+def _debug_scan_fn(
+    sig_a_n_len: tuple[list[jax.Array], int],
+    sig_b_n_len: tuple[list[jax.Array], int],
+    factor: float,
+) -> tuple[list[jax.Array], int]:
+    sig_a, len_a = sig_a_n_len
+    sig_b, len_b = sig_b_n_len
+    if jnp.ndim(len_a) == 0:
+        return (*sig_b, len_b), (*sig_b, len_b)
+    sig_concat = _ema_scaled_concat_list(
+        sig_a, sig_b, unsqueeze_zero_dim(len_b), factor
+    )
+    return (*sig_concat, len_a + len_b), (*sig_concat, len_a + len_b)
+
+
+@jax.jit
+def _debug_right_scan_fn(
+    sig_a_n_len: tuple[list[jax.Array], int],
+    sig_b_n_len: tuple[list[jax.Array], int],
+    factor: float,
+) -> tuple[list[jax.Array], int]:
+    sig_a, len_a = sig_a_n_len
+    sig_b, len_b = sig_b_n_len
+    if jnp.ndim(len_b) == 0:
+        return (*sig_a, len_a), (*sig_a, len_a)
+    sig_concat = _ema_scaled_concat_right_list(
+        sig_a, sig_b, unsqueeze_zero_dim(len_a), factor
+    )
+    return (*sig_concat, len_a + len_b), (*sig_concat, len_a + len_b)
+
+
+def _indexed_ema_signature_debug(
+    path: jax.Array,
+    depth: int,
+    factor: float,
+    indices: jax.Array,
+    inverse: bool = False,
+    padding: bool = True,
+) -> jax.Array:
+    if inverse:
+        if padding:
+            path = jnp.concatenate([path, path[:, -1:]], axis=1, dtype=path.dtype)
+    else:
+        if padding:
+            path = jnp.concatenate([path[:, :1], path], axis=1, dtype=path.dtype)
+    split_path = jnp.split(path, indices, axis=1)
+    split_path_ends = [x[..., [-1], :] for x in split_path[:-1]]
+    split_path = [split_path[0]] + [
+        jnp.concatenate([e, p], axis=1) for e, p in zip(split_path_ends, split_path[1:])
+    ]
+    split_ema_sigs = jax.tree_map(
+        lambda x: ema_signature(x, depth, factor, inverse=inverse, flatten=False),
+        split_path,
+    )
+    split_ema_sigs = tree_transpose(split_ema_sigs)
+    split_ema_sigs = [jnp.stack(x, 1) for x in split_ema_sigs]
+
+    return split_ema_sigs
