@@ -341,6 +341,31 @@ def test_windowed_sliding_signature():
     assert True
 
 
+def test_windowed_sliding_signature_batched():
+    n_paths = 10
+    path_len = 37
+    channels = 4
+    depth = 3
+    window_len = 5
+    alpha = 0.5
+    batch_size = 3
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    path = dummy.copy()
+    sig = windowed_sliding_signature(path, depth, window_len, alpha)
+    sig_batched = windowed_sliding_signature(
+        path,
+        depth,
+        window_len,
+        alpha,
+        batch_size=batch_size,
+        lengthwise_batch_size=4,
+    )
+    sig = flatten_signature_stream(sig)
+    sig_batched = flatten_signature_stream(sig_batched)
+    assert np.allclose(sig, sig_batched)
+
+
 def test_ema_rolling_signature_strided_batched():
     n_paths = 10
     path_len = 435
@@ -518,6 +543,7 @@ def test_indexed_ema_signature_manual():
 # test_ema_rolling_signature_strided_scaled()
 # test_ema_rolling_signature_batched()
 # test_windowed_sliding_signature()
+test_windowed_sliding_signature_batched()
 # test_ema_rolling_signature_strided_batched()
 # test_scale_path()
 # test_ema_signature()

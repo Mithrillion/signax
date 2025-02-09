@@ -235,15 +235,18 @@ def ema_rolling_signature(
         sig_elem = jax.vmap(batch_sig_fn)(path_elem)
         sig_d = jnp.ones(sig_elem[0].shape[:2], dtype=jnp.int32)
     else:
-        path_batches = [
-            path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
-            for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
-        ]
-        sig_list = []
-        for path_batch in path_batches:
-            sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
-            sig_list.append(sig_elem_batch)
-        sig_d = jnp.ones((path_elem.shape[0], sig_list[0][0].shape[1]), dtype=jnp.int32)
+        sig_elem = jax.lax.map(batch_sig_fn, path_elem, batch_size=batch_size)
+        sig_d = jnp.ones(sig_elem[0].shape[:2], dtype=jnp.int32)
+        # NOTE: old impl
+        # path_batches = [
+        #     path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
+        #     for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
+        # ]
+        # sig_list = []
+        # for path_batch in path_batches:
+        #     sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
+        #     sig_list.append(sig_elem_batch)
+        # sig_d = jnp.ones((path_elem.shape[0], sig_list[0][0].shape[1]), dtype=jnp.int32)
 
     # shared associative scan (reducion) step
     batch_reduce_fn = lambda x, y: jax.lax.associative_scan(
@@ -253,30 +256,36 @@ def ema_rolling_signature(
     if batch_size is None:
         rolling_sig, lengths = jax.vmap(batch_reduce_fn)(sig_elem, sig_d)
     else:
+        rolling_sig, lengths = jax.lax.map(
+            lambda x: batch_reduce_fn(x[0], x[1]),
+            (sig_elem, sig_d),
+            batch_size=batch_size,
+        )
+        # NOTE: old impl
         # break (sig_elem, sig_d) into list of batches [(sig_elem_batch, sig_d_batch) ...]
-        sig_batches = [
-            (
-                path_batch,
-                sig_d[sig_elem_batch_idx : sig_elem_batch_idx + batch_size],
-            )
-            for path_batch, sig_elem_batch_idx in zip(
-                sig_list,
-                range(
-                    0,
-                    path_elem.shape[0],
-                    batch_size,
-                ),
-            )
-        ]  # depends on JAX out of bound index behaviour
-        rolling_sig_list = []
-        for sig_elem_batch, sig_d_batch in sig_batches:
-            rolling_sig_batch, lengths_batch = jax.vmap(batch_reduce_fn)(
-                sig_elem_batch, sig_d_batch
-            )
-            rolling_sig_list.append(rolling_sig_batch)
-        rolling_sig = [
-            jnp.concatenate(terms, axis=0) for terms in zip(*rolling_sig_list)
-        ]  # concatenate batches
+        # sig_batches = [
+        #     (
+        #         path_batch,
+        #         sig_d[sig_elem_batch_idx : sig_elem_batch_idx + batch_size],
+        #     )
+        #     for path_batch, sig_elem_batch_idx in zip(
+        #         sig_list,
+        #         range(
+        #             0,
+        #             path_elem.shape[0],
+        #             batch_size,
+        #         ),
+        #     )
+        # ]  # depends on JAX out of bound index behaviour
+        # rolling_sig_list = []
+        # for sig_elem_batch, sig_d_batch in sig_batches:
+        #     rolling_sig_batch, lengths_batch = jax.vmap(batch_reduce_fn)(
+        #         sig_elem_batch, sig_d_batch
+        #     )
+        #     rolling_sig_list.append(rolling_sig_batch)
+        # rolling_sig = [
+        #     jnp.concatenate(terms, axis=0) for terms in zip(*rolling_sig_list)
+        # ]  # concatenate batches
     return rolling_sig
 
 
@@ -441,7 +450,14 @@ def ema_rolling_signature_strided(
 
 @partial(
     jax.jit,
-    static_argnames=("depth", "window_len", "alpha", "batch_size", "num_chunks"),
+    static_argnames=(
+        "depth",
+        "window_len",
+        "alpha",
+        "batch_size",
+        "lengthwise_batch_size",
+        "num_chunks",
+    ),
 )
 def windowed_sliding_signature(
     path: jnp.ndarray,
@@ -449,6 +465,7 @@ def windowed_sliding_signature(
     window_len: int,
     alpha: float = 0.5,
     batch_size: int = None,
+    lengthwise_batch_size: int = None,
     num_chunks: int = 1,
 ) -> jnp.ndarray:
     """
@@ -464,7 +481,7 @@ def windowed_sliding_signature(
     """
     # Ensure the window length is odd
     window_len = window_len + 1 if window_len % 2 == 0 else window_len
-    window = jnp.array(tukey(window_len, alpha=alpha))
+    window = jnp.asarray(tukey(window_len, alpha=alpha), dtype=path.dtype)
     # Pad the path with the window length
     padding_len = window_len // 2
     padded_path = jnp.pad(
@@ -475,23 +492,32 @@ def windowed_sliding_signature(
     # apply window function
     path_elem = path_elem * window[None, :, None]
     # compute the signature
-    batch_sig_fn = jax.vmap(
-        lambda x: signature(x, depth, flatten=False, num_chunks=num_chunks)
-    )
+    if lengthwise_batch_size is None:
+        batch_sig_fn = jax.vmap(
+            lambda x: signature(x, depth, flatten=False, num_chunks=num_chunks)
+        )
+    else:
+        batch_sig_fn = lambda u: jax.lax.map(
+            lambda x: signature(x, depth, flatten=False, num_chunks=num_chunks),
+            u,
+            batch_size=lengthwise_batch_size,
+        )
     if batch_size is None:
         sigs = jax.vmap(batch_sig_fn)(path_elem)
     else:
-        path_batches = [
-            path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
-            for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
-        ]
-        sig_list = []
-        for path_batch in path_batches:
-            sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
-            sig_list.append(sig_elem_batch)
-        sigs = [
-            jnp.concatenate(terms, axis=0) for terms in zip(*sig_list)
-        ]  # concatenate batches
+        sigs = jax.lax.map(batch_sig_fn, path_elem, batch_size=batch_size)
+        # NOTE: old impl
+        # path_batches = [
+        #     path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
+        #     for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
+        # ]
+        # sig_list = []
+        # for path_batch in path_batches:
+        #     sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
+        #     sig_list.append(sig_elem_batch)
+        # sigs = [
+        #     jnp.concatenate(terms, axis=0) for terms in zip(*sig_list)
+        # ]  # concatenate batches
     return sigs
 
 
