@@ -198,6 +198,13 @@ def _moving_window(a: jax.Array, size: int, axis: int):
     )(starts)
 
 
+@partial(jax.jit, static_argnums=(2, 3))
+def _indexed_window(a: jax.Array, indices: jax.Array, size: int, axis: int):
+    return jax.vmap(
+        lambda start: jax.lax.dynamic_slice_in_dim(a, start, size, axis), out_axes=1
+    )(indices)
+
+
 @partial(jax.jit, static_argnames=("depth", "inverse", "padding", "batch_size"))
 def ema_rolling_signature(
     path: jax.Array,
@@ -467,6 +474,7 @@ def windowed_sliding_signature(
     batch_size: int = None,
     lengthwise_batch_size: int = None,
     num_chunks: int = 1,
+    indices: jax.Array = None,
 ) -> jnp.ndarray:
     """
     Sliding window signature with a window function.
@@ -478,6 +486,7 @@ def windowed_sliding_signature(
        alpha: float, the alpha parameter of the Tukey window. Default is 0.5.
        batch_size: int, the batch size to use for the computation.
        num_chunks: int, the number of chunks to split the path into. Default is 1.
+       indices: jax.Array, the indices to evaluate the window function at.
     """
     # Ensure the window length is odd
     window_len = window_len + 1 if window_len % 2 == 0 else window_len
@@ -488,7 +497,10 @@ def windowed_sliding_signature(
         path, ((0, 0), (padding_len, padding_len), (0, 0)), mode="edge"
     )
     # unfold path to sliding window of size window_len along t dimension
-    path_elem = _moving_window(padded_path, window_len, 1)
+    if indices is None:
+        path_elem = _moving_window(padded_path, window_len, 1)
+    else:
+        path_elem = _indexed_window(padded_path, indices, window_len, 1)
     # apply window function
     path_elem = path_elem * window[None, :, None]
     # compute the signature

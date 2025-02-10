@@ -336,7 +336,6 @@ def test_windowed_sliding_signature():
     alpha = 0.5
 
     path = rng.standard_normal((n_paths, path_len, channels))
-    path = dummy.copy()
     sig = windowed_sliding_signature(path, depth, window_len, alpha)
     assert True
 
@@ -351,7 +350,6 @@ def test_windowed_sliding_signature_batched():
     batch_size = 3
 
     path = rng.standard_normal((n_paths, path_len, channels))
-    path = dummy.copy()
     sig = windowed_sliding_signature(path, depth, window_len, alpha)
     sig_batched = windowed_sliding_signature(
         path,
@@ -364,6 +362,26 @@ def test_windowed_sliding_signature_batched():
     sig = flatten_signature_stream(sig)
     sig_batched = flatten_signature_stream(sig_batched)
     assert np.allclose(sig, sig_batched)
+
+
+def test_windowed_sliding_signature_indexed():
+    n_paths = 10
+    path_len = 333
+    channels = 4
+    depth = 3
+    window_len = 5
+    alpha = 0.5
+    indices = jnp.array([11, 111, 222, 300], dtype=jnp.int32)
+
+    path = rng.standard_normal((n_paths, path_len, channels))
+    sig = windowed_sliding_signature(path, depth, window_len, alpha, indices=indices)
+    sig = flatten_signature_stream(sig)
+    sig_full = windowed_sliding_signature(path, depth, window_len, alpha)
+    sig_full = flatten_signature_stream(sig_full)
+    assert np.allclose(sig[:, 0], sig_full[:, 11])
+    assert np.allclose(sig[:, 1], sig_full[:, 111])
+    assert np.allclose(sig[:, 2], sig_full[:, 222])
+    assert np.allclose(sig[:, 3], sig_full[:, 300])
 
 
 def test_ema_rolling_signature_strided_batched():
@@ -543,7 +561,8 @@ def test_indexed_ema_signature_manual():
 # test_ema_rolling_signature_strided_scaled()
 # test_ema_rolling_signature_batched()
 # test_windowed_sliding_signature()
-test_windowed_sliding_signature_batched()
+# test_windowed_sliding_signature_batched()
+test_windowed_sliding_signature_indexed()
 # test_ema_rolling_signature_strided_batched()
 # test_scale_path()
 # test_ema_signature()
