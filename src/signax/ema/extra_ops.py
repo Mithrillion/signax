@@ -5,6 +5,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from signax import signature_combine
+from signax.tensor_ops import log
 
 
 # exp(x) = 1 + x + x/2(x + x/3(x + x/4(x + ...)))
@@ -22,3 +23,8 @@ def tensor_exp(logsig: list[jax.Array]):
             logsig,
         )
     return result
+
+
+def invert_sig(sig: list[jax.Array]):
+    # sig^-1=exp(-log(sig))
+    return tensor_exp(jax.tree.map(jnp.negative, log(sig)))
