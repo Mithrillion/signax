@@ -204,7 +204,8 @@ def _indexed_window(a: jax.Array, indices: jax.Array, size: int, axis: int):
         lambda start: jax.lax.dynamic_slice_in_dim(a, start, size, axis), out_axes=1
     )(indices)
 
-
+# TODO: remove batch dimension functionalities from here
+# so it can be independently applied
 @partial(jax.jit, static_argnames=("depth", "inverse", "padding", "batch_size"))
 def ema_rolling_signature(
     path: jax.Array,
@@ -244,18 +245,6 @@ def ema_rolling_signature(
     else:
         sig_elem = jax.lax.map(batch_sig_fn, path_elem, batch_size=batch_size)
         sig_d = jnp.ones(sig_elem[0].shape[:2], dtype=jnp.int32)
-        # NOTE: old impl
-        # path_batches = [
-        #     path_elem[path_elem_batch_idx : path_elem_batch_idx + batch_size]
-        #     for path_elem_batch_idx in range(0, path_elem.shape[0], batch_size)
-        # ]
-        # sig_list = []
-        # for path_batch in path_batches:
-        #     sig_elem_batch = jax.vmap(batch_sig_fn)(path_batch)
-        #     sig_list.append(sig_elem_batch)
-        # sig_d = jnp.ones((path_elem.shape[0], sig_list[0][0].shape[1]), dtype=jnp.int32)
-
-    # shared associative scan (reducion) step
     batch_reduce_fn = lambda x, y: jax.lax.associative_scan(
         lambda u, t: scan_concat_op_fn(u, t, factor), (x, y), reverse=inverse
     )
@@ -268,31 +257,6 @@ def ema_rolling_signature(
             (sig_elem, sig_d),
             batch_size=batch_size,
         )
-        # NOTE: old impl
-        # break (sig_elem, sig_d) into list of batches [(sig_elem_batch, sig_d_batch) ...]
-        # sig_batches = [
-        #     (
-        #         path_batch,
-        #         sig_d[sig_elem_batch_idx : sig_elem_batch_idx + batch_size],
-        #     )
-        #     for path_batch, sig_elem_batch_idx in zip(
-        #         sig_list,
-        #         range(
-        #             0,
-        #             path_elem.shape[0],
-        #             batch_size,
-        #         ),
-        #     )
-        # ]  # depends on JAX out of bound index behaviour
-        # rolling_sig_list = []
-        # for sig_elem_batch, sig_d_batch in sig_batches:
-        #     rolling_sig_batch, lengths_batch = jax.vmap(batch_reduce_fn)(
-        #         sig_elem_batch, sig_d_batch
-        #     )
-        #     rolling_sig_list.append(rolling_sig_batch)
-        # rolling_sig = [
-        #     jnp.concatenate(terms, axis=0) for terms in zip(*rolling_sig_list)
-        # ]  # concatenate batches
     return rolling_sig
 
 
